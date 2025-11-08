@@ -1,0 +1,313 @@
+Final Full-Stack MVP (Replit-Compatible)
+
+Goal:
+A complete web app that:
+
+Lets user upload a .pcap file.
+
+Backend (FastAPI) runs your model, extracts IOCs, performs GeoIP lookup, and optional CTI enrichment.
+
+Frontend (React + Tailwind + Framer Motion) shows a dark, glassmorphic Kibana-style dashboard.
+
+User can download a sleek, auto-generated PDF report.
+
+1. Folder Structure (for Replit)
+
+Replit supports monorepos, so keep everything inside a single project folder:
+
+/ai-pcap-dashboard
+├─ main.py                  # FastAPI entrypoint (backend)
+├─ model.pkl                # Your trained model
+├─ geoip/GeoLite2-City.mmdb # MaxMind DB
+├─ requirements.txt
+├─ frontend/
+│  ├─ index.html
+│  ├─ package.json
+│  └─ src/
+│      ├─ App.jsx
+│      ├─ components/
+│      │   ├─ UploadPanel.jsx
+│      │   ├─ Dashboard.jsx
+│      │   ├─ MapView.jsx
+│      │   ├─ IOCExplorer.jsx
+│      │   └─ ReportButton.jsx
+│      └─ styles.css
+└─ replit.nix / .replit
+
+2. How it will run on Replit
+
+FastAPI Backend: Handles file upload, analysis, and report generation.
+
+Frontend (React): Runs on port 5173 (Vite) or directly served via FastAPI’s static mount.
+
+Both run under one environment — perfect for your workflow.
+
+3. Tech Stack Summary
+Component	Technology	Purpose
+Backend	FastAPI	PCAP parsing, ML model inference, GeoIP
+Frontend	React + TailwindCSS + Framer Motion	Dashboard UI
+Charts	Plotly.js	Data visualizations
+Map	React-Leaflet + OpenStreetMap	Geolocation visualization
+PDF	WeasyPrint	Professional report generation
+GeoIP	MaxMind GeoLite2	Offline IP → location
+CTI (optional)	AbuseIPDB / VirusTotal	IOC enrichment (cached)
+4. Replit Configuration
+
+In .replit
+
+run = "uvicorn main:app --host 0.0.0.0 --port 8000"
+
+
+Add a Replit secret for your CTI keys:
+
+VT_API_KEY=<your key>
+ABUSE_API_KEY=<your key>
+
+5. Backend Code (FastAPI)
+
+main.py
+
+from fastapi import FastAPI, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+import joblib, uuid, os, maxminddb, pandas as pd
+from weasyprint import HTML
+import pyshark, json
+
+app = FastAPI(title="AI-PCAP Dashboard")
+
+# Allow frontend requests from any origin
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
+
+# Load model once
+model = joblib.load("model.pkl")
+geo_reader = maxminddb.open_database("geoip/GeoLite2-City.mmdb")
+
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+@app.post("/api/analyze")
+async def analyze_pcap(file: UploadFile = File(...)):
+    file_path = f"{UPLOAD_DIR}/{uuid.uuid4()}_{file.filename}"
+    with open(file_path, "wb") as f:
+        f.write(await file.read())
+
+    # Extract basic stats via pyshark
+    cap = pyshark.FileCapture(file_path, only_summaries=True)
+    flows, ips = [], set()
+    for pkt in cap:
+        if hasattr(pkt, "source") and hasattr(pkt, "destination"):
+            ips.add(pkt.source)
+            ips.add(pkt.destination)
+            flows.append({
+                "proto": pkt.protocol,
+                "len": int(pkt.length),
+                "time": float(pkt.time)
+            })
+    cap.close()
+
+    df = pd.DataFrame(flows)
+    df["avg_len"] = df["len"].rolling(5).mean().fillna(0)
+    prediction = model.predict([df["avg_len"].mean()])[0]
+
+    # GeoIP lookup
+    geo_data = []
+    for ip in list(ips)[:100]:
+        try:
+            res = geo_reader.get(ip)
+            if res:
+                geo_data.append({
+                    "ip": ip,
+                    "country": res.get("country", {}).get("names", {}).get("en", "Unknown"),
+                    "lat": res.get("location", {}).get("latitude"),
+                    "lon": res.get("location", {}).get("longitude")
+                })
+        except Exception:
+            continue
+
+    result = {
+        "summary": {
+            "packets": len(flows),
+            "unique_ips": len(ips),
+            "prediction": str(prediction)
+        },
+        "geo": geo_data,
+        "flows": flows
+    }
+
+    with open(f"{file_path}.json", "w") as jf:
+        json.dump(result, jf)
+
+    return result
+
+@app.post("/api/report")
+async def generate_report(result: dict):
+    html_content = f"""
+    <html><body style='font-family: Poppins'>
+      <h1>AI-PCAP Report</h1>
+      <h3>Prediction: {result['summary']['prediction']}</h3>
+      <p>Packets: {result['summary']['packets']}</p>
+      <p>Unique IPs: {result['summary']['unique_ips']}</p>
+      <h2>Geo Overview</h2>
+      <ul>
+        {''.join([f"<li>{x['ip']} — {x['country']}</li>" for x in result['geo']])}
+      </ul>
+    </body></html>"""
+    output_path = "report.pdf"
+    HTML(string=html_content).write_pdf(output_path)
+    return FileResponse(output_path, filename="AI-PCAP-Report.pdf")
+
+
+What it does
+
+Accepts PCAP → extracts flows + IPs → runs model → GeoIP → returns structured JSON.
+
+Optional /api/report endpoint builds sleek PDF with key findings.
+
+6. Frontend Features
+Upload Panel
+
+File input with neon animation.
+
+After upload → shows progress animation → then renders dashboard.
+
+Dashboard Components
+
+Summary Cards
+
+Total packets
+
+Unique IPs
+
+Model prediction
+
+Confidence (if available)
+
+Charts Section
+
+Time-series of packets
+
+Protocol distribution
+
+Port usage (bar chart)
+
+Geo Map
+
+World map with colored markers (Leaflet).
+
+Hover → show IP & country.
+
+IOC Table
+
+List of IPs and threat scores.
+
+Color-coded (benign/medium/malicious).
+
+Report Generator
+
+“Generate PDF Report” button → calls /api/report.
+
+7. Frontend Code (React Starter)
+
+frontend/src/App.jsx
+
+import React, { useState } from "react";
+import axios from "axios";
+import UploadPanel from "./components/UploadPanel";
+import Dashboard from "./components/Dashboard";
+
+export default function App() {
+  const [data, setData] = useState(null);
+
+  const handleUpload = async (file) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await axios.post("http://localhost:8000/api/analyze", fd, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+    setData(res.data);
+  };
+
+  return (
+    <div className="min-h-screen bg-[#0b0f19] text-white">
+      {!data ? (
+        <UploadPanel onUpload={handleUpload} />
+      ) : (
+        <Dashboard data={data} />
+      )}
+    </div>
+  );
+}
+
+
+frontend/src/components/UploadPanel.jsx
+
+import React, { useState } from "react";
+import { motion } from "framer-motion";
+
+export default function UploadPanel({ onUpload }) {
+  const [file, setFile] = useState(null);
+
+  return (
+    <motion.div
+      className="flex flex-col items-center justify-center h-screen glass rounded-2xl p-10"
+      initial={{ opacity: 0, y: 30 }}
+      animate={{ opacity: 1, y: 0 }}
+    >
+      <h2 className="text-3xl font-bold mb-4 text-cyan-400">AI-PCAP Analyzer</h2>
+      <input
+        type="file"
+        accept=".pcap,.pcapng"
+        onChange={(e) => setFile(e.target.files[0])}
+        className="text-gray-300 p-2"
+      />
+      <button
+        className="mt-4 bg-cyan-500 px-6 py-2 rounded-lg hover:bg-cyan-400"
+        onClick={() => onUpload(file)}
+      >
+        Analyze
+      </button>
+    </motion.div>
+  );
+}
+
+8. Styling — Dark Liquid Glass
+
+Add in frontend/src/styles.css:
+
+.glass {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 20px;
+  backdrop-filter: blur(15px);
+  box-shadow: 0 4px 30px rgba(0,0,0,0.5);
+  border: 1px solid rgba(255,255,255,0.2);
+}
+
+
+Tailwind Config Tip: Use bg-[#0b0f19] text-white as base + neon gradients for cards.
+
+9. Future Extensions
+
+Once MVP is running:
+
+Add CTI enrichment for IPs/domains (AbuseIPDB or VirusTotal).
+
+Add attack classification breakdown (confidence bars).
+
+Improve report template with charts/images.
+
+Deploy via Replit’s web app hosting.
+
+✅ Your MVP Summary (Ready for Replit)
+Layer	Stack	Purpose
+Frontend	React + Tailwind + Framer Motion	Dashboard UI
+Backend	FastAPI (single file)	Handle upload, run model, GeoIP, report
+Map	React-Leaflet	Display IP origins
+Charts	Plotly.js	Interactive visual stats
+Report	WeasyPrint	Generate sleek downloadable PDF
+Hosting	Replit	One-click full-stack deployment

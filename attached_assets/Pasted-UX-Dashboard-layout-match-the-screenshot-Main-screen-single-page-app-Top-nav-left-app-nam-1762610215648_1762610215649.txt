@@ -1,0 +1,320 @@
+UX / Dashboard layout (match the screenshot)
+
+Main screen (single page app)
+
+Top nav: left = app name + PCAP filename; right = upload button, time range selector, settings.
+
+Big top band: search/query bar (optional filters).
+
+Left column / main canvas:
+
+Large “Events Over Time” stacked area chart (packets/flows over time).
+
+Below: small metric cards (Packets, Flows, Malicious %, Predicted Attack, Confidence).
+
+Row of panels: donut (protocol split), volume donut, top destinations pie, top sources pie, geo pairs bar chart.
+
+Right column:
+
+Large interactive world map (primary element) with country choropleth + per-IP markers.
+
+Under map: IOC table (IPs/domains/hashes) with sorting, tags for malicious/suspicious/benign.
+
+Bottom: expandable raw-events table (flow/packet rows) with selectable rows to highlight on the map.
+
+Interaction behaviour
+
+Click a country region → zoom map, filter left charts and table to show only records from that country.
+
+Click a marker → open side-drawer with IOC detail (first seen, ASN, related flows, enrichment results, model factors).
+
+Hover on time series → highlight related flows/IPs on map and table.
+
+Filter bar updates charts and map in realtime (client-side filtering of JSON payloads).
+
+2 — IP → Geolocation (real-time techniques)
+
+Options (choose 1 or combine):
+
+A. Local GeoIP DB (recommended) — fast, offline-capable, and privacy-friendly
+
+Use MaxMind GeoLite2 (free) or GeoIP2 (paid for accuracy).
+
+Python: geoip2 or maxminddb library.
+
+Query on ingestion: resolve IP → country, region, city, lat/lon, ASN (if DB has ASN).
+
+Advantages: No rate limits, fast local lookups, works offline.
+
+B. OSINT/Online APIs (supplemental)
+
+IPinfo, ipstack, ipapi.io — useful if you want extra metadata (company, abuse score) but subjected to rate limits and privacy concerns. Use only for enrichment that you cache.
+
+C. DNS/Passive-DNS
+
+Resolve domain → A records, then geolocate resolved IPs. Use passive DNS feeds to find historical IPs for a domain.
+
+Implementation pattern (fast path):
+
+On PCAP parse, collect unique IPs.
+
+Deduplicate and batch lookup in local GeoIP DB.
+
+Cache results in DB (SQLite / Redis) keyed by IP with TTL (e.g., 7–30 days).
+
+Return geo points + aggregated counts to frontend.
+
+Python snippet (GeoIP) — FastAPI endpoint example:
+
+# backend/geo_lookup.py
+import maxminddb, sqlite3, time
+from typing import Dict
+
+GEO_DB_PATH = "/opt/geoip/GeoLite2-City.mmdb"
+reader = maxminddb.open_database(GEO_DB_PATH)
+
+# simple cache (SQLite)
+conn = sqlite3.connect('ioc_cache.db', check_same_thread=False)
+conn.execute('''CREATE TABLE IF NOT EXISTS geo_cache(
+  ip TEXT PRIMARY KEY, country TEXT, region TEXT, city TEXT,
+  latitude REAL, longitude REAL, asn TEXT, ts INTEGER)''')
+conn.commit()
+
+def geoip_lookup(ip: str) -> Dict:
+    cur = conn.execute("SELECT country,region,city,latitude,longitude,asn,ts FROM geo_cache WHERE ip=?", (ip,))
+    row = cur.fetchone()
+    if row and time.time() - row[6] < 30*24*3600:
+        return {"ip": ip, "country": row[0], "region": row[1], "city": row[2], "lat": row[3], "lon": row[4], "asn": row[5]}
+    try:
+        resp = reader.get(ip)
+        country = resp.get('country', {}).get('names', {}).get('en')
+        city = resp.get('city', {}).get('names', {}).get('en')
+        lat = resp.get('location', {}).get('latitude')
+        lon = resp.get('location', {}).get('longitude')
+        asn = None
+        # Optionally use GeoLite2-ASN DB for ASN
+        conn.execute("REPLACE INTO geo_cache(ip,country,region,city,latitude,longitude,asn,ts) VALUES(?,?,?,?,?,?,?,?)",
+                     (ip, country, None, city, lat, lon, asn, int(time.time())))
+        conn.commit()
+        return {"ip": ip, "country": country, "region": None, "city": city, "lat": lat, "lon": lon, "asn": asn}
+    except Exception:
+        return {"ip": ip}
+
+
+Frontend mapping:
+
+Use Leaflet.js + React-Leaflet or Plotly choropleth.
+
+Use marker clustering for many IPs (Leaflet.markercluster).
+
+Color coding: malicious → neon-red glow, suspicious → yellow/orange, benign → green/cyan.
+
+3 — CTI / Threat Feed Integration (IPs & Domains)
+
+Goal: enrich IOCs from PCAP with threat intelligence to help score and label them.
+
+Feeds/APIs to use (practical combo)
+
+VirusTotal — file/IP/domain reputation, behavioral tags. (API v3; rate limits; paid tier for higher throughput).
+
+AbuseIPDB — reputation reports & scores for IPs (useful).
+
+MISP (self-hosted) or OpenCTI — ingest local or community CTI feeds (best for offline integration and custom indicators).
+
+PassiveTotal / CIRCL PDNS / DNSDB — for domain historical resolution (passive DNS).
+
+AlienVault OTX — free pulses and IP/domain indicators.
+
+Integration strategy
+
+Primary enrichment pipeline (recommended): do local lookups first (MISP/OpenCTI if you host), then query external APIs only for missing/unknown IOCs or when user asks for live-enrich. Always cache responses and obey API rate limits.
+
+Scoring: combine multiple signals into a single threat_score (0–100). Example weighting:
+
+VirusTotal malicious count normalized → 40% weight
+
+AbuseIPDB confidence → 20%
+
+MISP match (local) → 30%
+
+PassiveDNS suspicious history → 10%
+
+Example Python snippet (VirusTotal + AbuseIPDB):
+
+# backend/enrich.py
+import requests, os, time
+VT_API = os.getenv('VT_API_KEY')
+ABUSE_KEY = os.getenv('ABUSE_KEY')
+CACHE_TTL = 24*3600
+
+def vt_ip_lookup(ip):
+    url = f"https://www.virustotal.com/api/v3/ip_addresses/{ip}"
+    headers = {"x-apikey": VT_API}
+    r = requests.get(url, headers=headers, timeout=10)
+    if r.status_code == 200:
+        data = r.json()
+        # parse malicious/harmless counts, resolution, tags
+        return data
+    return None
+
+def abuseipdb_lookup(ip):
+    url = "https://api.abuseipdb.com/api/v2/check"
+    params = {"ipAddress": ip}
+    headers = {"Key": ABUSE_KEY, "Accept": "application/json"}
+    r = requests.get(url, headers=headers, params=params, timeout=10)
+    return r.json() if r.status_code==200 else None
+
+
+Caveats:
+
+Rate limits — implement per-API rate limiting (token-bucket) and exponential backoff.
+
+Privacy/legal — do not send customer PCAPs to third-party services without consent.
+
+Offline CTI (preferred for production)
+
+Host a MISP instance or get an OpenCTI stack and push frequent feeds (MISP pulses, CERT lists).
+
+Query local MISP -> immediate results and no rate limits.
+
+4 — Data model & caching
+
+Suggested simple DB schema (SQLite/Postgres):
+
+tables:
+
+analysis_runs (id, filename, user, timestamp, verdict, malicious_percent, attack_type, confidence, report_path)
+
+iocs (id, run_id, type, value, first_seen_ts, last_seen_ts, count, raw_context)
+
+ioc_enrichment (ioc_id, source, enriched_json, threat_score, last_checked)
+
+Caching logic:
+
+Cache geo lookups per IP (TTL 7–30 days)
+
+Cache VT/Abuse results per IOC (TTL 24–72 hours) to avoid API overuse
+
+Store model results (per-run) so re-rendering dashboard doesn’t retrigger model
+
+5 — Threat Scoring / Verdict logic
+
+Example scoring pipeline for each IOC:
+
+Base score = model-derived IOC suspicion (e.g., from feature influence / SHAP contribution normalized 0–100).
+
++VT_malicious_count × weight
+
++AbuseIPDB_confidence × weight
+
++MISP_pulse_match → add fixed high weight
+
+Normalize to 0–100, map to verdict:
+
+0–29 → benign
+
+30–59 → suspicious
+
+60–100 → malicious
+
+At the run level:
+
+run_malicious_percent = fraction of flows/IPs with IOC threat_score ≥ 60.
+
+Final verdict uses a threshold (e.g., malicious_percent ≥ 20% → run verdict = malicious) — configurable.
+
+Explainability:
+
+For each flagged IOC include top 3 contributing signals (e.g., model feature X, VT:15/70, AbuseIPDB:score=92). This is what you show in the side drawer.
+
+6 — Backend endpoints (FastAPI minimal)
+
+POST /api/analyze — upload PCAP, returns job_id
+
+GET /api/status/{job_id} — job progress (parsing -> geo -> enrich -> model -> done)
+
+GET /api/result/{job_id} — full JSON with summary, graphs data, geo points, iocs with enrichment
+
+POST /api/report/{job_id} — generate PDF (synchronous or background job)
+
+GET /api/download/{report_id} — download PDF
+
+Important implementation notes:
+
+Use background workers (Celery / RQ / built-in FastAPI BackgroundTasks) for PCAP parsing & enrichment. But keep PCAP size limits for laptop (e.g., 200MB).
+
+For single-laptop MVP: simple background thread + status polling is fine.
+
+7 — Frontend mapping & libraries
+
+React + Vite or Next.js
+
+UI: TailwindCSS + Radix/Shadcn or MUI (dark theme)
+
+Animations: Framer Motion for transitions and the upload/pulse animations
+
+Charts: Plotly or Recharts for interactive time-series and bar/donut charts
+
+Map: React-Leaflet + Mapbox tiles (or OpenStreetMap tiles if no Mapbox key)
+
+Marker cluster: leaflet.markercluster or use deck.gl for advanced visuals
+
+Data flow: frontend calls /api/analyze → poll status → when status == done fetch /api/result → render charts and map. All charts respond to filter state (country / timeframe / IOC type).
+
+How to show country choropleth:
+
+Aggregate counts by country_code on backend and return geojson-style object: { country_code: {count: N, malicious_count:M} }
+
+Use Plotly choropleth or Leaflet combined with d3 to color countries.
+
+How to show per-IP markers:
+
+Return array of {ip, lat, lon, threat_score, country, count, asn}
+
+On map paint markers sized by count and colored by threat_score gradient.
+
+8 — Example: end-to-end minimal flow (sequence)
+
+Upload PCAP
+
+Backend extracts flows, DNS, HTTP, TLS (Zeek or pyshark)
+
+Backend produces: flows.json, iocs.json (unique IPs/domains), time_series.json
+
+Backend performs GeoIP lookups for unique IPs → caches results
+
+Backend queries enrichment services (cache, rate-limit)
+
+Backend runs your model (use preloaded scikit/LightGBM pickled model) against features → get predictions + SHAP
+
+Backend computes IOC threat scores (combine model evidence + CTI hits)
+
+Backend returns aggregated JSON and stores run and enrichment in DB
+
+Frontend renders charts/map and allows drilldown; user clicks “Export PDF” → backend composes report and returns file
+
+9 — Security, Privacy, and Operational notes
+
+Don’t send raw PCAPs to third-party APIs (VT/AbuseIPDB only receive IPs/domains/hashes). If you need full-file analysis, ensure explicit consent.
+
+Rate limits & billing: VirusTotal (public API is low rate limit), AbuseIPDB also has limits. Consider buying paid keys or host local CTI (MISP/OpenCTI) for production use.
+
+For sensitive environment prefer local maxmind db and local CTI caches.
+
+10 — Quick checklist & next steps (what I can give you now)
+
+You can implement this iteratively. here’s a prioritized action list:
+
+Add GeoIP local lookups (MaxMind GeoLite2) + caching — implement endpoint GET /api/geo/{ip}.
+
+Parse PCAPs with Zeek to get flows & IOCs (DNS/HTTP/TLS). Store unique IPs.
+
+Integrate your model on backend to accept features and return predictions + SHAP values.
+
+Implement enrichment connector with AbuseIPDB + optional VT + MISP. Cache results.
+
+Create GET /api/result/{job} that returns the combined JSON (geo + charts + iocs).
+
+Frontend: React + Leaflet + Plotly rendering, Framer Motion animations and glass UI.
+
+PDF report generation (ReportLab / WeasyPrint) with chart snapshots.

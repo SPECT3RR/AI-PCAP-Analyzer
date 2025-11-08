@@ -1,0 +1,139 @@
+Final Project Plan (Full-Stack Replit MVP)
+App Type
+
+Full-Stack Modern Web App
+
+Description
+
+An AI-powered PCAP analysis dashboard with a React glassmorphic interface and a FastAPI backend for real-time machine learning-based threat detection.
+The platform provides interactive GeoIP visualization, IOC exploration, and automated PDF reporting — all within a sleek, dark, futuristic web interface.
+
+At first glance, users are greeted with a dynamic landing page that explains:
+
+What the platform does: automated AI analysis of PCAP network traffic.
+
+Why it’s needed: to detect and visualize potential malicious patterns efficiently.
+
+How it works: upload a PCAP → AI model processes it → dashboard reveals patterns and threat insights.
+
+From there, the landing page transitions smoothly into the main dashboard environment, where users can upload their PCAP files and see interactive results in real time.
+
+Core Features
+🏠 Dynamic Landing Page
+
+Visually animated landing page built with React + Framer Motion, featuring glassmorphic panels and neon hover animations.
+
+Explains the platform’s workflow: Upload → Analyze → Visualize → Report.
+
+Smooth “Start Analysis” button scrolls or transitions to the upload interface.
+
+📤 Drag-and-Drop PCAP Upload
+
+Animated upload panel with drag-and-drop or file-picker options.
+
+Real-time progress and transition animations.
+
+Once uploaded, file is sent to the FastAPI backend for parsing and AI analysis.
+
+🧠 FastAPI Backend (/api/analyze)
+
+Handles file uploads securely.
+
+Parses PCAPs using PyShark or Scapy.
+
+Runs your trained ML model (loaded with joblib) to classify traffic as benign or malicious.
+
+Extracts IOCs (IPs, domains, ports) and returns structured JSON to the frontend.
+
+🌐 Interactive Dashboard
+
+Animated metric cards: packets, flows, unique IPs, malicious ratio, and predicted attack type.
+
+Geo Map (React-Leaflet): shows per-IP markers with colors based on threat score; includes zoom and hover pop-ups.
+
+Time-series charts (Plotly.js): visualize packet and flow trends, protocol ratios, and anomalies over time.
+
+IOC Explorer Table: sortable and filterable, with color-coded threat badges (benign / suspicious / malicious).
+
+🌍 Local GeoIP Lookup
+
+Offline lookups via MaxMind GeoLite2 database.
+
+Uses SQLite caching for high-speed repeated IP queries.
+
+Displays country, city, and ASN on the map and in the table.
+
+🧩 Threat Enrichment (Optional)
+
+Integrate external CTI feeds (VirusTotal, AbuseIPDB, MISP, or OpenCTI).
+
+Cache API results in SQLite to avoid rate limits.
+
+📄 Professional PDF Report (/api/report)
+
+Generates an elegant PDF using WeasyPrint with summarized findings:
+
+Key statistics
+
+Detected attack type
+
+IOC overview
+
+GeoIP distribution charts
+
+Downloadable directly from the dashboard.
+
+🧭 Responsive, Multi-Panel Layout
+
+Kibana-style responsive grid with:
+
+Top: metric cards
+
+Middle: charts + Geo map
+
+Bottom: IOC table
+
+Adaptive design optimized for desktops and tablets.
+
+Tech Stack
+Layer	Technology	Purpose
+Frontend	React (Vite), TailwindCSS, Framer Motion, Plotly.js, React-Leaflet	Glassmorphic UI, animations, charts, and map
+Backend	FastAPI (Python), PyShark, joblib, MaxMind GeoIP	PCAP parsing, ML inference, GeoIP lookup
+Database	SQLite	Cache GeoIP and enrichment data
+Report Engine	WeasyPrint	Generate downloadable reports
+Hosting	Replit (Full-Stack Deployment)	Single-environment hosting for frontend + backend
+Workflow Summary
+
+User lands on a dynamic landing page with visuals and explanation.
+
+Clicks “Start Analysis” → navigates to the PCAP upload panel.
+
+Uploads a .pcap file → backend analyzes traffic with AI model.
+
+Dashboard renders:
+
+Charts, Geo map, and IOC table dynamically.
+
+User optionally clicks “Generate Report” → backend returns PDF.
+
+Expected Outcome
+
+A sleek, glassmorphic AI dashboard that:
+
+Detects and classifies malicious PCAP traffic.
+
+Maps IP origins globally with color-coded threat indicators.
+
+Provides interactive charts and detailed IOCs.
+
+Lets users export professional PDF summaries.
+
+Everything runs efficiently on a standard laptop and deploys seamlessly in Replit’s environment.
+
+Replit Configuration
+
+Backend command: uvicorn main:app --host 0.0.0.0 --port 8000
+
+Frontend command: npm run dev --prefix frontend
+
+Combine via Replit’s “Full-Stack Web App” mode.
