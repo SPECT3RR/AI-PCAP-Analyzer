@@ -81,6 +81,17 @@ export default {
           busy: "rgb(239 68 68)",
           offline: "rgb(156 163 175)",
         },
+        neon: {
+          cyan: "#22d3ee",
+          "cyan-bright": "#06b6d4",
+          purple: "#a855f7",
+          "purple-bright": "#9333ea",
+        },
+        threat: {
+          benign: "#10b981",
+          suspicious: "#f59e0b",
+          malicious: "#ef4444",
+        },
       },
       fontFamily: {
         sans: ["var(--font-sans)"],
